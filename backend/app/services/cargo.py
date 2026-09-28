@@ -18,33 +18,57 @@ class CargoService:
         *,
         keyword: str | None = None,
         status: str | None = None,
+        flight: str | None = None,
+        weight: str | None = None,
+        position: str | None = None,
         page: int = 1,
         size: int = 20,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int, int, str | None]:
+        """按条件过滤并分页。
+
+        返回 (当前页数据, 过滤后总数, 实际页码, 提示语)。
+        page、size 的合法性由接口层校验；这里只负责把超出末页的页码收敛到最后一页，
+        保证页码、行数、合计三者口径一致。
+        """
         rows = store.rows(MODULE)
         if keyword:
             rows = [row for row in rows if keyword in str(row.get("装载单号", ""))]
         if status:
             rows = [row for row in rows if row.get("status") == status]
+        if flight:
+            rows = [row for row in rows if flight in str(row.get("关联航班", ""))]
+        if weight:
+            rows = [row for row in rows if weight in str(row.get("货邮重量", ""))]
+        if position:
+            rows = [row for row in rows if position in str(row.get("装载位置", ""))]
         total = len(rows)
-        start = max(page - 1, 0) * size
-        return rows[start:start + size], total
+        last_page = max(1, (total + size - 1) // size)
+        message = None
+        if page > last_page:
+            message = f"第 {page} 页超出范围，已为您跳到最后一页（第 {last_page} 页）"
+            page = last_page
+        start = (page - 1) * size
+        return rows[start:start + size], total, page, message
 
     def get_entry(self, entry_id: int) -> dict[str, Any] | None:
         return store.find(MODULE, entry_id)
 
-    def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
+    def create_entry(self, values: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+        """登记装载单：缺必填字段、装载单号重复都明确拦下并说明原因。"""
         missing = [field for field in REQUIRED_FIELDS if not str(values.get(field) or "").strip()]
         if missing:
-            return None, missing
+            return None, f"缺少必填字段：{'、'.join(missing)}"
+        code = str(values.get("装载单号")).strip()
         rows = store.rows(MODULE)
+        if any(str(row.get("装载单号", "")).strip() == code for row in rows):
+            return None, f"装载单号 {code} 已存在，请勿重复登记"
         entry = {"id": max((int(row.get("id", 0)) for row in rows), default=0) + 1}
         entry.update({field: values.get(field) for field in REQUIRED_FIELDS})
         entry["status"] = STATUS_ORDER[0]
         entry["pending"] = True
         entry["abnormal"] = False
         rows.append(entry)
-        return entry, []
+        return entry, None
 
     def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
         entry = store.find(MODULE, entry_id)
